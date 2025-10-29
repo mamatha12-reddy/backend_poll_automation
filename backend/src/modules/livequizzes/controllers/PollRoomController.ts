@@ -8,6 +8,9 @@ import {
   HttpCode,
   Req,
   Res,
+  NotFoundError,
+  Delete,
+  BadRequestError,
 } from 'routing-controllers';
 import { Request, Response } from 'express';
 import multer from 'multer';
@@ -253,6 +256,185 @@ async getYoutubeAudio(@Req() req: Request, @Res() res: Response) {
       await this.cleanupService.cleanup(tempPaths);
     }
   }
-}
+  
+   // In-memory poll endpoints
+  @Post('/:code/in-memory-polls')
+  @Authorized()
+  @OpenAPI({
+    summary: 'Create a new in-memory poll',
+    description: 'Creates a new in-memory poll in the specified room',
+    responses: {
+      '201': { description: 'Poll created successfully' },
+      '400': { description: 'Invalid input' },
+      '401': { description: 'Unauthorized' },
+      '404': { description: 'Room not found' }
+    }
+  })
+  async createInMemoryPoll(
+    @Param('code') roomCode: string,
+    @Body() body: CreateInMemoryPollDto
+  ): Promise<InMemoryPollResponse> {
+    // Validate input
+    const errors = await validate(body);
+    if (errors.length > 0) {
+      throw new BadRequestError(`Validation failed: ${errors.toString()}`);
+    }
 
+    // Verify room exists
+    const room = await this.roomService.getRoomByCode(roomCode);
+    if (!room) {
+      throw new NotFoundError('Room not found');
+    }
+
+    // Validate correctOptionIndex is within bounds
+    if (body.correctOptionIndex >= body.options.length) {
+      throw new BadRequestError('correctOptionIndex is out of bounds');
+    }
+
+    try {
+      const poll = await this.pollService.createInMemoryPoll(
+        roomCode,
+        {
+          question: body.question,
+          options: body.options,
+          correctOptionIndex: body.correctOptionIndex,
+          timer: body.timer
+        }
+      );
+
+      return poll;
+    } catch (error) {
+      console.error('Error creating in-memory poll:', error);
+      throw new BadRequestError('Failed to create poll');
+    }
+  }
+
+  @Post('/:code/in-memory-polls/:pollId/answer')
+  @Authorized()
+  @OpenAPI({
+    summary: 'Submit an answer to an in-memory poll',
+    description: 'Submits an answer to the specified in-memory poll',
+    responses: {
+      '200': { description: 'Answer submitted successfully' },
+      '400': { description: 'Invalid input' },
+      '401': { description: 'Unauthorized' },
+      '404': { description: 'Poll not found' }
+    }
+  })
+  async submitInMemoryAnswer(
+    @Param('code') roomCode: string,
+    @Param('pollId') pollId: string,
+    @Body() body: SubmitInMemoryAnswerDto
+  ): Promise<{ success: boolean }> {
+    // Validate input
+    const errors = await validate(body);
+    if (errors.length > 0) {
+      throw new BadRequestError(`Validation failed: ${errors.toString()}`);
+    }
+
+    try {
+      await this.pollService.submitInMemoryAnswer(
+        roomCode,
+        pollId,
+        body.userId,
+        body.answerIndex
+      );
+      return { success: true };
+    } catch (error) {
+      console.error('Error submitting answer:', error);
+      throw new BadRequestError('Failed to submit answer');
+    }
+  }
+
+  @Get('/:code/in-memory-polls/:pollId/results')
+  @Authorized()
+  @OpenAPI({
+    summary: 'Get results for an in-memory poll',
+    description: 'Retrieves the current results for the specified in-memory poll',
+    responses: {
+      '200': { description: 'Poll results retrieved successfully' },
+      '401': { description: 'Unauthorized' },
+      '404': { description: 'Poll not found' }
+    }
+  })
+  async getInMemoryPollResults(
+    @Param('code') roomCode: string,
+    @Param('pollId') pollId: string
+  ): Promise<InMemoryPollResult> {
+    const results = await this.pollService.getInMemoryPollResults(roomCode, pollId);
+    if (!results) {
+      throw new NotFoundError('Poll not found or no results available');
+    }
+    return results;
+  }
+
+  @Post('/:code/in-memory-polls/:pollId/end')
+  @Authorized()
+  @OpenAPI({
+    summary: 'End an in-memory poll',
+    description: 'Ends the specified in-memory poll and calculates final results',
+    responses: {
+      '200': { description: 'Poll ended successfully' },
+      '401': { description: 'Unauthorized' },
+      '404': { description: 'Poll not found' }
+    }
+  })
+  async endInMemoryPoll(
+    @Param('code') roomCode: string,
+    @Param('pollId') pollId: string
+  ): Promise<{ success: boolean }> {
+    try {
+      await this.pollService.endInMemoryPoll(roomCode, pollId);
+      return { success: true };
+    } catch (error) {
+      console.error('Error ending poll:', error);
+      throw new BadRequestError('Failed to end poll');
+    }
+  }
+
+  @Delete('/:code/in-memory-polls/:pollId')
+  @Authorized()
+  @OpenAPI({
+    summary: 'Delete an in-memory poll',
+    description: 'Deletes the specified in-memory poll',
+    responses: {
+      '200': { description: 'Poll deleted successfully' },
+      '401': { description: 'Unauthorized' },
+      '404': { description: 'Poll not found' }
+    }
+  })
+  async deleteInMemoryPoll(
+    @Param('code') roomCode: string,
+    @Param('pollId') pollId: string
+  ): Promise<{ success: boolean }> {
+    const success = await this.pollService.deleteInMemoryPoll(roomCode, pollId);
+    if (!success) {
+      throw new NotFoundError('Poll not found');
+    }
+    return { success: true };
+  }
+
+  @Get('/:code/in-memory-polls')
+  @Authorized()
+  @OpenAPI({
+    summary: 'Get all active in-memory polls',
+    description: 'Retrieves all active in-memory polls for the specified room',
+    responses: {
+      '200': { description: 'Active polls retrieved successfully' },
+      '401': { description: 'Unauthorized' },
+      '404': { description: 'Room not found' }
+    }
+  })
+  async getActiveInMemoryPolls(
+    @Param('code') roomCode: string
+  ): Promise<InMemoryPollResponse[]> {
+    // Verify room exists
+    const room = await this.roomService.getRoomByCode(roomCode);
+    if (!room) {
+      throw new NotFoundError('Room not found');
+    }
+
+    return this.pollService.getActiveInMemoryPolls(roomCode);
+  }
+}
 
