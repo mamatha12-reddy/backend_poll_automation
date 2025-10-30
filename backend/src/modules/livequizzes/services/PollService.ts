@@ -68,9 +68,6 @@ export class PollService {
     }
 
     pollSocket.emitToRoom(roomCode, 'new-poll', poll);
-
-    // Emit update to all clients
-    this.emitPollUpdate(roomCode, pollId);
     return poll;
   }
 
@@ -151,16 +148,29 @@ export class PollService {
 
 
   async submitInMemoryAnswer(roomCode: string, pollId: string, userId: string, answerIndex: number) {
-
-  }
-
-  async getInMemoryPollResults(roomCode: string, pollId: string) {
     const poll = this.activePolls.get(pollId);
     if (!poll || poll.roomCode !== roomCode) {
-      return null;
+      throw new Error('Poll not found or invalid room');
     }
+
+    // Remove previous response if user already voted
+    if (poll.userResponses.has(userId)) {
+      const prevAnswerIndex = poll.userResponses.get(userId)!;
+      poll.responses[prevAnswerIndex]--;
+      poll.totalResponses--;
+    }
+
+    // Add new response
+    poll.userResponses.set(userId, answerIndex);
+    poll.responses[answerIndex] = (poll.responses[answerIndex] || 0) + 1;
+    poll.totalResponses++;
+
+    // Emit update to all clients
+    this.emitPollUpdate(roomCode, pollId);
+
     return this.getPollData(poll);
   }
+
 
   async endInMemoryPoll(roomCode: string, pollId: string) {
     const poll = this.activePolls.get(pollId);
@@ -237,7 +247,12 @@ export class PollService {
     const poll = this.activePolls.get(pollId);
     if (!poll) return;
 
-    this.pollSocket.emitToRoom(roomCode, 'in-memory-poll-update', this.getPollData(poll));
+    const pollData = this.getPollData(poll);
+
+    // Also update the room data
+    // Emit to all clients in the room
+    console.log(`[POLL Service]Emitting in-memory-poll-update for room ${roomCode}:`, pollData);
+    this.pollSocket.emitToAll(roomCode, 'in-memory-poll-update', pollData);
   }
 
   private getPollData(poll: InMemoryPoll) {

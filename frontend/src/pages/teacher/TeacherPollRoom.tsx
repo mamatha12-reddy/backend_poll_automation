@@ -76,7 +76,17 @@ const supportedLanguages: { code: SupportedLanguage; label: string }[] = [
   { code: "ur-IN", label: "Urdu" },
 ];
 
-type PollResults = Record<string, Record<string, { count: number; users: User[] }>>;
+interface PollResponseData {
+  responses: Record<string, number>;
+  totalResponses: number;
+  userResponses: Record<string, Array<{ userId: string; userName: string }>>;
+  question?: string;
+  options?: string[];
+  timeLeft?: number;
+  timer?: number;
+}
+
+type PollResults = Record<string, PollResponseData>;
 
 type GeneratedQuestion = {
   question: string;
@@ -87,7 +97,7 @@ type GeneratedQuestion = {
 export default function TeacherPollRoom() {
   const params = useParams({ from: '/teacher/pollroom/$code' });
   const navigate = useNavigate();
-  const roomCode = params.code;
+  const roomCode: string = params.code as string;
   const { user } = useAuthStore();
 
   // Helper Hooks - defined at the top to avoid temporal dead zone
@@ -148,8 +158,19 @@ export default function TeacherPollRoom() {
   const [correctOptionIndex, setCorrectOptionIndex] = useState<number>(0);
   const [timer, setTimer] = useState<number>(30);
   const [pollResults, setPollResults] = useState<PollResults>({});
-
-  // End room state
+  // State for live poll results
+  type LivePollResult = {
+    responses: Record<string, number>; // optionIndex: count
+    totalResponses: number;
+    userResponses: Record<string, Array<{ userId: string; userName: string }>>; // optionIndex: users[]
+    question?: string;
+    options?: string[];
+    timeLeft?: number;
+    timer?: number;
+  };
+  
+  const [livePollResults, setLivePollResults] = useState<Record<string, LivePollResult>>({});
+  const [showMemberNames, setShowMemberNames] = useState<Record<string, boolean>>({});
   const [isEndingRoom, setIsEndingRoom] = useState(false);
   const [showEndRoomConfirm, setShowEndRoomConfirm] = useState(false);
 
@@ -171,8 +192,6 @@ export default function TeacherPollRoom() {
   const queuedGeneratedQuestionsRef = useRef<GeneratedQuestion[]>([]);
 
   // New state for member names toggle
-  const [showMemberNames, setShowMemberNames] = useState<Record<string, boolean>>({});
-
   const [isGenerateClicked, setIsGenerateClicked] = useState(false);
   const [audioManagerKey, setAudioManagerKey] = useState(0);
 
@@ -233,24 +252,118 @@ export default function TeacherPollRoom() {
   const [transcript, setTranscript] = useState<string | null>(null);
   const [isLiveRecordingActive, setIsLiveRecordingActive] = useState(false);
   const [showStudentsModal, setShowStudentsModal] = useState(false)
-  const [students, setStudents] = useState([])
+  const [students, setStudents] = useState([]);
+
+  const [joinedRoom, setJoinedRoom] = useState(false);
+
+
+  // Socket connection and event management
   useEffect(() => {
     if (!roomCode) return;
 
-    socket.emit("join-room", roomCode, null);
+    console.log('[Room] Initializing room connection for:', roomCode);
 
-    socket.on("room-updated", (updatedRoom) => {
-      setStudents(updatedRoom.students);
-    });
+    // Join room function
+    const joinRoom = () => {
+      console.log('Joining room:', roomCode);
+      
+      // Test connection
+      socket.emit('ping', { test: 'test' }, (response: any) => {
+        console.log('Ping response:', response);
+      });
 
-    return () => {
-      socket.off("room-updated");
-      socket.emit("leave-room", roomCode, null);
+      socket.emit('join-room', roomCode, (response: any) => {
+        console.log('Join room response:', response);
+        if (response?.status === 'error') {
+          console.error('Error joining room:', response.message);
+        } else {
+          setJoinedRoom(true);
+        }
+      });
     };
+
+    // Handle poll updates
+    const handlePollUpdate = (data: any) => {
+      console.log('[DEBUG] Received in-memory-poll-update event:', data);
+      
+      setLivePollResults(prev => {
+        const updated = { ...prev };
+        const pollId = data.pollId || roomCode; // Fallback to roomCode if pollId is not provided
+
+        // Initialize or update poll data
+        updated[pollId] = {
+          ...(updated[pollId] || {}),
+          responses: { ...data.responses },
+          totalResponses: data.totalResponses || 0,
+          userResponses: data.userResponses || {},
+          question: data.question || updated[pollId]?.question,
+          options: data.options || updated[pollId]?.options || [],
+          timeLeft: data.timeLeft,
+          timer: data.timer
+        };
+
+        console.log('Updated poll results:', updated[pollId]);
+        return { ...updated };
+      });
+    };
+
+    // Set up all socket event listeners
+    const setupEventListeners = () => {
+      console.log('Setting up socket listeners...');
+      
+      // Clear any existing listeners
+      socket.off('in-memory-poll-update');
+      socket.off('room-updated');
+      socket.off('connect');
+      socket.off('disconnect');
+      socket.off('connect_error');
+      socket.off('error');
+
+      // Set up new listeners
+      socket.on('in-memory-poll-update', handlePollUpdate);
+      
+      socket.on('room-updated', (updatedRoom) => {
+        console.log('Room updated:', updatedRoom);
+        setStudents(updatedRoom.students || []);
+      });
+
+      socket.on('connect', () => {
+        console.log('Socket connected with ID:', socket.id);
+        joinRoom(); // Re-join room on reconnect
+      });
+
+      socket.on('disconnect', (reason) => {
+        console.log('Socket disconnected:', reason);
+        setJoinedRoom(false);
+      });
+
+      socket.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+        setJoinedRoom(false);
+      });
+
+      socket.on('error', (error) => {
+        console.error('Socket error:', error);
+      });
+    };
+
+    // Initial setup
+    // joinRoom();
+    setupEventListeners();
+
+    if (socket.connected) {
+      joinRoom();
+    }
   }, [roomCode]);
 
-  const displayTranscript =
-    liveTranscript + (interimTranscript ? " " + interimTranscript : "");
+// Debug effect to log livePollResults changes
+useEffect(() => {
+  console.log('livePollResults updated:', livePollResults);
+}, [livePollResults]);
+
+
+const displayTranscript =
+  liveTranscript + (interimTranscript ? " " + interimTranscript : "");
 
   // Process pending text chunks sequentially and store results in queuedGeneratedQuestionsRef
   const processPendingQueue = useCallback(async () => {
@@ -638,6 +751,8 @@ export default function TeacherPollRoom() {
         correctOptionIndex
       });
 
+      localStorage.setItem('livepollresults', JSON.stringify(response.data));
+
       toast.success("Poll created!");
       setQuestion("");
       setOptions(["", "", "", ""]);
@@ -995,6 +1110,8 @@ export default function TeacherPollRoom() {
 
   const [launchedQuestions, setLaunchedQuestions] = useState<Set<number>>(new Set());
   const [readyToCreatePoll, setReadyToCreatePoll] = useState(false);
+  const [isPollActive, setIsPollActive] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
 
   useEffect(() => {
     if (readyToCreatePoll) {
@@ -1005,16 +1122,35 @@ export default function TeacherPollRoom() {
   }, [readyToCreatePoll, question, options, correctOptionIndex]);
 
   const handleLaunchPoll = async () => {
-
     const confirmed = window.confirm('Are you sure you want to launch this poll?');
 
     if (confirmed) {
       const currentQ = generatedQuestions[currentQuestionIndex];
+      
+      // Close any open edit mode when launching poll
+      setEditingQuestionIndex(null);
+      
+      // Set poll as active and start the timer
+      setIsPollActive(true);
+      setTimeLeft(timer);
 
       // Update state and set the flag to true once updates are complete
       setQuestion(currentQ.question);
       setOptions([...currentQ.options]);
       setCorrectOptionIndex(currentQ.correctOptionIndex);
+
+      // Start the countdown timer
+      const countdown = setInterval(() => {
+        setTimeLeft(prevTime => {
+          if (prevTime <= 1) {
+            clearInterval(countdown);
+            setIsPollActive(false);
+            setTimeLeft(0); // Ensure timer is exactly 0 when it ends
+            return 0;
+          }
+          return prevTime - 1;
+        });
+      }, 1000);
 
       // Use a timeout to ensure state updates are applied
       setTimeout(() => {
@@ -1049,7 +1185,7 @@ export default function TeacherPollRoom() {
                 disabled={!generatedQuestions.length}
               >
                 <Wand2 className="w-4 h-4 mr-2" />
-                {showPreview  ? 'Hide Questions' : 'Generated Questions'}
+                {showPreview ? 'Hide Questions' : 'Generated Questions'}
               </Button>
               <Button
                 variant={showPollModal ? "default" : "outline"}
@@ -1555,7 +1691,6 @@ export default function TeacherPollRoom() {
                                         Question
                                       </label>
                                       <div className="flex items-center gap-2 flex-wrap">
-
                                         {editingQuestion !== null ? (
                                           <div className="flex gap-2">
                                             <Button
@@ -1618,7 +1753,7 @@ export default function TeacherPollRoom() {
                                     ) : (
                                       <div className="p-2 sm:p-3 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 text-sm sm:text-base">
                                         {generatedQuestions[currentQuestionIndex].question || "Untitled Question"}
-                                      </div>
+                                  </div>
                                     )}
                                   </div>
 
@@ -1634,54 +1769,128 @@ export default function TeacherPollRoom() {
                                     </div>
 
                                     <div className="space-y-2 overflow-y-auto pr-1">
-                                      {generatedQuestions[currentQuestionIndex].options.map((option, optionIndex) => (
-                                        <div
-                                          key={optionIndex}
-                                          onClick={() => handleOptionClick(optionIndex)}
-                                          className={`p-2 sm:p-3 rounded-md cursor-pointer transition-colors ${generatedQuestions[currentQuestionIndex].correctOptionIndex === optionIndex
-                                            ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-300 font-medium'
-                                            : 'bg-gray-100/50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700/70'
-                                            }`}
-                                        >
-                                          <div className="flex items-center gap-2 sm:gap-3">
-                                            <div className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${generatedQuestions[currentQuestionIndex].correctOptionIndex === optionIndex
-                                              ? 'bg-green-500'
-                                              : 'bg-gray-300 dark:bg-gray-600'
-                                              }`}>
-                                              <span className="text-white text-xs">
-                                                {generatedQuestions[currentQuestionIndex].correctOptionIndex === optionIndex ? '✓' : String.fromCharCode(65 + optionIndex)}
-                                              </span>
-                                            </div>
-
-                                            {editingQuestion === currentQuestionIndex ? (
-                                              <Input
-                                                value={option}
-                                                onChange={(e) => handleOptionChange(optionIndex, e.target.value)}
-                                                className="flex-1 bg-white dark:bg-gray-800 border-0 border-b border-transparent focus-visible:ring-0 focus-visible:border-b-gray-300 dark:focus-visible:border-b-gray-600 text-sm sm:text-base"
-                                                placeholder={`Option ${optionIndex + 1}`}
-                                                onClick={(e) => e.stopPropagation()}
+                                      {generatedQuestions[currentQuestionIndex].options.map((option, optionIndex) => {
+                                        // Find matching poll data by comparing questions and options
+                                        const currentQuestion = generatedQuestions[currentQuestionIndex];
+                                        const pollEntry = Object.entries(livePollResults).find(([_, poll]) => {
+                                          // Check if questions match (case insensitive and trimmed)
+                                          const questionsMatch = poll.question && 
+                                            currentQuestion.question &&
+                                            poll.question.trim().toLowerCase() === currentQuestion.question.trim().toLowerCase();
+                                          
+                                          // Check if options match (length and content)
+                                          const optionsMatch = poll.options && 
+                                            poll.options.length === currentQuestion.options.length &&
+                                            poll.options.every((opt, i) => 
+                                              opt.trim().toLowerCase() === currentQuestion.options[i]?.trim().toLowerCase()
+                                            );
+                                          
+                                          return questionsMatch || optionsMatch;
+                                        });
+                                        
+                                        const pollData = pollEntry ? pollEntry[1] : null;
+                                        const showResults = !!pollData;
+                                        
+                                        // Get response data with proper fallbacks
+                                        const responseCount = showResults ? (pollData.responses?.[optionIndex.toString()] || 0) : 0;
+                                        const totalResponses = showResults ? (pollData.totalResponses || 0) : 0;
+                                        const percentage = showResults && totalResponses > 0 ? (responseCount / totalResponses) * 100 : 0;
+                                        const char = String.fromCharCode(65 + optionIndex);
+                                        const isCorrect = currentQuestion.correctOptionIndex === optionIndex;
+                                    
+                                        return (
+                                          <div
+                                            key={optionIndex}
+                                            onClick={() => !isPollActive && handleOptionClick(optionIndex)}
+                                            className={`relative p-2 sm:p-3 rounded-md transition-colors ${
+                                              isCorrect
+                                                ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800'
+                                                : 'bg-gray-100/50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700/70'
+                                            } ${!isPollActive ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'}`}
+                                          >
+                                            {/* Progress bar background - only show if we have matching poll data */}
+                                            {showResults && (
+                                              <div 
+                                                className="absolute inset-0 bg-green-100 dark:bg-green-900/30 rounded transition-all duration-500 ease-out"
+                                                style={{
+                                                  width: `${percentage}%`,
+                                                  opacity: 0.3,
+                                                  transition: 'width 500ms ease-out'
+                                                }}
                                               />
-                                            ) : (
-                                              <span className="flex-1 text-sm sm:text-base break-words">
-                                                {option || `Option ${optionIndex + 1} (empty)`}
-                                              </span>
                                             )}
+                                            
+                                            <div className="relative z-10">
+                                              <div className="flex items-center gap-2 sm:gap-3">
+                                                <div 
+                                                  className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${
+                                                    isCorrect
+                                                      ? 'bg-green-500 text-white'
+                                                      : 'bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-200'
+                                                  }`}
+                                                >
+                                                  <span className="text-xs font-medium">
+                                                    {isCorrect ? '✓' : char}
+                                                  </span>
+                                                </div>
+
+                                                {editingQuestion === currentQuestionIndex ? (
+                                                  <Input
+                                                    value={option}
+                                                    onChange={(e) => handleOptionChange(optionIndex, e.target.value)}
+                                                    className="flex-1 bg-white/80 dark:bg-gray-800/80 border-0 border-b border-transparent focus-visible:ring-0 focus-visible:border-b-gray-300 dark:focus-visible:border-b-gray-600 text-sm sm:text-base"
+                                                    placeholder={`Option ${optionIndex + 1}`}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    disabled={isPollActive}
+                                                  />
+                                                ) : (
+                                                  <span className="flex-1 text-sm sm:text-base break-words">
+                                                    {option || `Option ${optionIndex + 1} (empty)`}
+                                                  </span>
+                                                )}
+
+                                                {/* Response count and percentage - only show if we have matching poll data */}
+                                                {showResults && totalResponses > 0 && (
+                                                  <div className="flex items-center gap-2 ml-2">
+                                                    <span className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                                                      {responseCount}
+                                                    </span>
+                                                    <div className="w-16 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                                                      <div 
+                                                        className="h-full bg-green-500 transition-all duration-500 ease-out"
+                                                        style={{ width: `${percentage}%` }}
+                                                      />
+                                                    </div>
+                                                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400 w-10 text-right">
+                                                      {Math.round(percentage)}%
+                                                    </span>
+                                                  </div>
+                                                )}
+                                              </div>
+                            
+                                            </div>
                                           </div>
-                                        </div>
-                                      ))}
+                                        );
+                                      })}
                                     </div>
                                   </div>
 
                                   {/* Action Buttons */}
                                   <div className="mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col lg:flex-row lg:justify-between gap-3 sm:gap-4 flex-shrink-0">
+                                    
 
                                     {/* Timer */}
                                     <div className="flex-1 lg:flex-initial">
-                                      <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 gap-1">
-                                        <Clock className="w-4 h-4" />
-                                        Timer (seconds)
-                                      </label>
-                                      <div className="flex items-center gap-2">
+                                    <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 gap-1">
+                                      <Clock className="w-4 h-4" />
+                                      {isPollActive ? 'Time Remaining' : 'Timer (seconds)'}
+                                    </label>
+                                    <div className="flex items-center gap-2">
+                                      {isPollActive ? (
+                                        <div className="text-xl font-bold text-purple-600 dark:text-purple-400 w-16 text-center">
+                                          {timeLeft}s
+                                        </div>
+                                      ) : (
                                         <Input
                                           type="number"
                                           placeholder="e.g. 30"
@@ -1690,20 +1899,24 @@ export default function TeacherPollRoom() {
                                           onChange={(e) => setTimer(Number(e.target.value))}
                                           className="dark:bg-gray-800/50 text-sm w-full sm:w-36"
                                           aria-label="Timer in seconds"
+                                          disabled={isPollActive}
                                         />
-                                      </div>
-                                      <p className="text-xs text-muted-foreground mt-1">
-                                        The timer controls how long the poll remains open for students to vote.
-                                      </p>
+                                      )}
                                     </div>
+                                    <p className="text-xs text-muted-foreground mt-1">
+                                      {isPollActive 
+                                        ? 'Poll is active. Students can now submit their responses.'
+                                        : 'The timer controls how long the poll remains open for students to vote.'}
+                                    </p>
+                                  </div>
 
                                     <Button
                                       onClick={handleLaunchPoll}
-                                      disabled={launchedQuestions.has(currentQuestionIndex)}
+                                      disabled={launchedQuestions.has(currentQuestionIndex) || isPollActive}
                                       className="w-full lg:w-auto lg:mt-5 bg-purple-600 hover:bg-purple-700 text-white"
                                     >
                                       <BarChart2 className="w-4 h-4 mr-2" />
-                                      Launch Poll
+                                      {isPollActive ? 'Poll Active' : 'Launch Poll'}
                                     </Button>
                                   </div>
                                 </div>
