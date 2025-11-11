@@ -471,17 +471,17 @@ export default function TeacherPollRoom() {
   }, [processPendingQueue]);
 
 
-  useEffect(() => {
-    if (transcriber.output?.text) {
-      setTranscript(transcriber.output.text);
-      setIsProcessing(false);
-    }
-  }, [transcriber.output]);
+  // useEffect(() => {
+  //   if (transcriber.output?.text) {
+  //     setTranscript(transcriber.output.text);
+  //     setIsProcessing(false);
+  //   }
+  // }, [transcriber.output]);
 
-  // Update processing state based on transcriber.isBusy
-  useEffect(() => {
-    setIsProcessing(transcriber.isBusy);
-  }, [transcriber.isBusy]);
+  // // Update processing state based on transcriber.isBusy
+  // useEffect(() => {
+  //   setIsProcessing(transcriber.isBusy);
+  // }, [transcriber.isBusy]);
 
   // Reset auto-generation buffers when manually clearing GenAI data
   useEffect(() => {
@@ -904,27 +904,37 @@ export default function TeacherPollRoom() {
   // Add this new state to track when we want to generate questions
   const [shouldGenerate, setShouldGenerate] = useState(false);
 
-  const processContent = useCallback((content: string) => {
+  const processContent = useCallback(async (content: string) => {
     if (!content.trim()) {
       toast.error('No content provided to generate questions');
       return;
     }
-
-    // Set the transcript and flag to generate questions
-    setTranscript(content);
-    setShouldGenerate(true);
+    try {
+      // console.log('processContent: Setting transcript and shouldGenerate');
+      setTranscript(content);
+      setShouldGenerate(true);
+      // Don't set isProcessing to false here - let the useEffect handle it
+    } catch (error) {
+      console.error('Error in processContent:', error);
+      toast.error('Failed to process content');
+    }
   }, []);
 
   // Add this useEffect to handle the generation after state updates
   useEffect(() => {
     const generate = async () => {
       if (shouldGenerate && transcript) {
+        // console.log('useEffect: Starting question generation');
         setShouldGenerate(false); // Reset the flag first
         try {
           await generateQuestions();
+          // console.log('useEffect: Question generation completed');
         } catch (error) {
           console.error('Error generating questions:', error);
           toast.error('Failed to generate questions');
+        } finally {
+          // console.log('useEffect: Setting isProcessing to false');
+          setIsProcessing(false);
         }
       }
     };
@@ -982,37 +992,51 @@ export default function TeacherPollRoom() {
 
   // Handle text file content submission
   const handleTextFileSubmit = async () => {
+    if (!textFileContent || !textFileContent.trim()) {
+      toast.error('The file is empty or not loaded yet');
+      return;
+    }
+
+    // console.log('Setting isProcessing to true');
+    setIsProcessing(true);
+    
     try {
-      setIsGenerateClicked(true);
-
-      // Ensure we have content to process
-      if (!textFileContent || !textFileContent.trim()) {
-        toast.error('The file is empty or not loaded yet');
-        return;
-      }
-
-      // Process the content
+      // console.log('Calling processContent');
       await processContent(textFileContent);
-
+      
       // Reset states after successful processing
       setTextFileContent('');
       setFileName('');
     } catch (error) {
       console.error('Error processing file content:', error);
       toast.error('Failed to process file content');
+      setIsProcessing(false); // Only set to false on error
     } finally {
-      setIsGenerateClicked(false);
+      setShowUploadTextFileModal(false);
     }
   };
 
   // Handle paste content submission
   const handlePasteSubmit = async () => {
-    setIsGenerateClicked(true);
-    if (!pastedContent.trim()) return;
-    await processContent(pastedContent);
-    setShowPasteModal(false);
-    setPastedContent('');
-    setIsGenerateClicked(false);
+    if (!pastedContent || !pastedContent.trim()) {
+      toast.error('The paste content is empty or not loaded yet');
+      return;
+    }
+
+    console.log('Paste: Setting isProcessing to true');
+    setIsProcessing(true);
+    
+    try {
+      console.log('Paste: Calling processContent');
+      await processContent(pastedContent);
+      setPastedContent('');
+    } catch (error) {
+      console.error('Error processing paste content:', error);
+      toast.error('Failed to process paste content');
+      setIsProcessing(false); // Only set to false on error
+    } finally {
+      setShowPasteModal(false);
+    }
   };
 
 
@@ -1901,10 +1925,17 @@ export default function TeacherPollRoom() {
                                 </label>
                                 <Button
                                   onClick={handleTextFileSubmit}
-                                  disabled={!textFileContent.trim()}
+                                  disabled={!textFileContent.trim() || isProcessing}
                                   className="h-10 bg-purple-600 hover:bg-purple-700 text-white flex-1"
                                 >
-                                  Generate Questions
+                                  {isProcessing ? (
+                                    <>
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                      Processing...
+                                    </>
+                                  ) : (
+                                    'Generate Questions'
+                                  )}
                                 </Button>
                               </div>
                             </div>
@@ -1964,10 +1995,17 @@ export default function TeacherPollRoom() {
                                 </Button>
                                 <Button
                                   onClick={handlePasteSubmit}
-                                  disabled={!pastedContent.trim() || isGenerating || isGenerateClicked}
+                                  disabled={!pastedContent.trim() || isProcessing}
                                   className="bg-purple-600 hover:bg-purple-700 text-white"
                                 >
-                                  Generate Questions
+                                  {isProcessing ? (
+                                    <>
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                      Processing...
+                                    </>
+                                  ) : (
+                                    'Generate Questions'
+                                  )}
                                 </Button>
                               </div>
                             </div>
@@ -2400,18 +2438,18 @@ export default function TeacherPollRoom() {
 
           {/* Loading Overlay */}
           {isProcessing && (
-            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center">
-              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl max-w-md w-full mx-4">
-                <div className="flex flex-col items-center space-y-4">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white">Processing Your Questions</h3>
-                  <p className="text-sm text-gray-600 dark:text-gray-300 text-center">
-                    Please wait while we process your questions. This may take a moment...
-                  </p>
+              <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[9999] flex items-center justify-center">
+                <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl max-w-md w-full mx-4">
+                  <div className="flex flex-col items-center space-y-4">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-500"></div>
+                    <h3 className="text-lg font-medium text-gray-900 dark:text-white">Processing Your Questions</h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-300 text-center">
+                      Please wait while we process your questions. This may take a moment...
+                    </p>
+                  </div>
                 </div>
-              </div>
             </div>
-          )}
+            )}
 
           {/* Create Poll  */}
           {showPollModal && (
