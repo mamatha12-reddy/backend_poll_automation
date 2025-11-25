@@ -4,7 +4,7 @@ import { resolve } from "path";
 
 export default defineConfig({
   plugins: [react()],
-  assetsInclude: ["**/*.ggml", "**/*.bin", "**/*.wasm"],
+  assetsInclude: ["**/*.ggml", "**/*.bin", "**/*.wasm"], 
 
   resolve: {
     alias: {
